@@ -8,12 +8,19 @@ import subprocess
 import pyperclip
 import cv2
 import easyocr
+import imageio_ffmpeg
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
-# 파일 및 폴더 경로 (d:\Github\Unity\media\video\video 기준)
-BASE_DIR = r"d:\Github\Unity\media\video\ko"
-WORK_DIR = r"d:\Github\Unity\media\video\video"
+# ffmpeg 경로 설정 (path에 없을 경우 대비)
+ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+ffmpeg_dir = os.path.dirname(ffmpeg_exe)
+if ffmpeg_dir not in os.environ["PATH"]:
+    os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ["PATH"]
+
+# 파일 및 폴더 경로
+BASE_DIR = r"c:\Users\Harry\videomake\videocreate\ko"
+WORK_DIR = r"c:\Users\Harry\videomake\videocreate\video"
 MODEL_FILE = os.path.join(BASE_DIR, "model")
 PROMPT_FILE = os.path.join(BASE_DIR, "prompt")
 
@@ -23,9 +30,42 @@ FINAL_SAVE_DIR = os.path.join(WORK_DIR, "download")
 os.makedirs(DOWNLOAD_TMP_DIR, exist_ok=True)
 os.makedirs(FINAL_SAVE_DIR, exist_ok=True)
 
+def patch_whisper_ffmpeg():
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    
+    # whisper 내부의 호출 경로 패치
+    import whisper.audio
+    
+    original_load_audio = whisper.audio.load_audio
+    
+    def modified_load_audio(file: str, sr: int = 16000):
+        try:
+            # 원본 코드를 imageio_ffmpeg의 실행 파일 경로로 덮어씌워서 실행시킴 (whisper.audio.load_audio 소스와 일치하게 구현)
+            cmd = [
+                ffmpeg_exe,
+                "-nostdin",
+                "-threads", "0",
+                "-i", file,
+                "-f", "s16le",
+                "-ac", "1",
+                "-acodec", "pcm_s16le",
+                "-ar", str(sr),
+                "-"
+            ]
+            out = subprocess.run(cmd, capture_output=True, check=True).stdout
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Failed to load audio: {e.stderr.decode()}") from e
+            
+        import numpy as np
+        return np.frombuffer(out, np.int16).flatten().astype(np.float32) / 32768.0
+
+    whisper.audio.load_audio = modified_load_audio
+
+patch_whisper_ffmpeg()
+
 def extract_audio(video_path, audio_path):
     command = [
-        "ffmpeg", "-y", "-i", video_path,
+        imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-i", video_path,
         "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
         audio_path
     ]
@@ -118,8 +158,9 @@ def main():
         download_btn_selector = "button:has(svg[class*='download' i]), button:has(svg[class*='Download' i]), button[aria-label*='ownload' i], button[aria-label*='다운로드']"
 
         for idx, prompt_text in enumerate(prompts):
-            # 하나의 프롬프트에 하나의 고정 모델(URL) 배정
-            target_url = urls[idx % len(urls)]
+            # 하나의 프롬프트(단어)마다 랜덤하게 하나의 URL을 선택합니다.
+            import random
+            target_url = random.choice(urls)
             
             match = re.search(r"'([^']+)'", prompt_text)
             target_word = match.group(1) if match else "버섯"
@@ -155,6 +196,11 @@ def main():
 
                 try:
                     page.wait_for_selector("div.tiptap", timeout=30000)
+                    
+                    # Grok이 이전 세션의 프롬프트 기록(히스토리)을 자동으로 불러오는 시간이 필요합니다.
+                    # 불러오기 전에 우리가 먼저 입력해버리면, 이후에 Grok이 예전 프롬프트로 덮어씌워 버립니다.
+                    print("[Playwright] Grok이 이전 기록을 불러올 때까지 대기합니다...")
+                    time.sleep(3.0) 
                 except Exception as e:
                     print("[에러] 입력창을 찾을 수 없습니다. (재시도)")
                     continue
@@ -162,21 +208,51 @@ def main():
                 initial_download_btns = page.locator(download_btn_selector).count()
                 initial_videos = page.locator("video").count()
 
-                print("[Playwright] 기존 프롬프트 지우기 및 새 프롬프트 붙여넣기 시도 중...")
-                pyperclip.copy(prompt_text)
-                page.locator("div.tiptap").focus()
-                page.keyboard.press("Control+A")
+                clean_prompt = "".join(prompt_text.splitlines()).strip()
+                
+                print("[Playwright] 기존 텍스트 완벽 지우기 시도 중...")
+                editor = page.locator("div.tiptap")
+                editor.click()
                 time.sleep(0.5)
+                
+                # 히스토리가 다 불러와졌을테니 이제 다 지웁니다.
+                page.keyboard.press("Control+A")
+                time.sleep(0.3)
                 page.keyboard.press("Backspace")
                 time.sleep(0.5)
+                
+                try:
+                    editor.clear(timeout=1000)
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+                print("[Playwright] 새 프롬프트 입력...")
+                pyperclip.copy(clean_prompt)
+                editor.focus()
                 page.keyboard.press("Control+V")
-                time.sleep(1)
+                time.sleep(1.0) # 다 들어가고 나서 충분히 여유를 줌
 
                 print("[Playwright] 프롬프트 제출(생성 시작)...")
+                # 제출 버튼: 보통 에디터 근처의 svg를 포함한 버튼임
                 try:
+                    # Enter 키로 제출 시도
                     page.keyboard.press("Enter")
-                    time.sleep(1)
-                    page.locator("xpath=//button[descendant::svg]").nth(-1).click(timeout=1000)
+                    time.sleep(0.5)
+                    # 별도의 전송 버튼 클릭 시도 (다양한 셀렉터)
+                    submit_selectors = [
+                        "button[aria-label='Send message']",
+                        "button:has(svg.lucide-arrow-up)",
+                        "button:has(svg.lucide-rocket)",
+                        "div.tiptap + div button", # 에디터 바로 뒤의 버튼
+                        "button:has-text('Generate')",
+                        "button:has-text('전송')"
+                    ]
+                    for selector in submit_selectors:
+                        btn = page.locator(selector).last
+                        if btn.is_visible(timeout=500):
+                            btn.click()
+                            break
                 except Exception:
                     pass
                 
