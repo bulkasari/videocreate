@@ -24,11 +24,39 @@ WORK_DIR = r"c:\Users\Harry\videomake\videocreate\video"
 MODEL_FILE = os.path.join(BASE_DIR, "model")
 PROMPT_FILE = os.path.join(BASE_DIR, "prompt")
 
+# 캐릭터 일관성을 위한 기준 이미지 풀 (폴더 내 모든 png 이미지 수집)
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
+REFERENCE_IMAGES = [
+    os.path.join(BASE_DIR, f) for f in os.listdir(BASE_DIR) 
+    if f.lower().endswith(IMAGE_EXTENSIONS) and ("Gemini" in f or "grok-image" in f)
+]
+
+if not REFERENCE_IMAGES:
+    print("[!] 경고: BASE_DIR에서 참조할 이미지 파일을 찾지 못했습니다.")
+
 DOWNLOAD_TMP_DIR = os.path.join(WORK_DIR, "download_tmp")
 FINAL_SAVE_DIR = os.path.join(WORK_DIR, "download")
 
 os.makedirs(DOWNLOAD_TMP_DIR, exist_ok=True)
 os.makedirs(FINAL_SAVE_DIR, exist_ok=True)
+
+def upload_image(page, image_path):
+    """Grok 입력창 근처의 파일 업로드 입력을 찾아 이미지를 올립니다."""
+    if not os.path.exists(image_path):
+        return False
+        
+    try:
+        # 파일 업로드 input 찾기
+        file_input = page.locator("input[type='file']")
+        if file_input.count() > 0:
+            file_input.first.set_input_files(image_path)
+            print(f"[Playwright] 이미지 참조 업로드: {os.path.basename(image_path)}")
+            time.sleep(1.5) # 업로드 대기
+            return True
+        return False
+    except Exception as e:
+        print(f"[!] 이미지 업로드 오류: {e}")
+        return False
 
 def patch_whisper_ffmpeg():
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
@@ -63,20 +91,18 @@ def patch_whisper_ffmpeg():
 
 patch_whisper_ffmpeg()
 
-def extract_audio(video_path, audio_path):
-    command = [
-        imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-i", video_path,
-        "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
-        audio_path
-    ]
-    subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
 def analyze_audio_with_whisper(video_path, target_word, model):
-    audio_tmp = video_path.replace(".mp4", "_temp.wav")
+    # 파일이 실제로 존재하고 접근 가능한지 잠시 대기하며 확인
+    for _ in range(5):
+        if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
+            break
+        time.sleep(0.5)
+
     try:
-        extract_audio(video_path, audio_tmp)
+        # Whisper는 패치된 load_audio 덕분에 mp4를 바로 입력받을 수 있습니다.
+        # 따로 wav를 추출할 필요 없이 직접 전달하여 안정성을 높입니다.
         result = model.transcribe(
-            audio_tmp, 
+            video_path, 
             language='ko', 
             initial_prompt=f"{target_word}, 동물이름", 
             verbose=False
@@ -84,15 +110,11 @@ def analyze_audio_with_whisper(video_path, target_word, model):
         transcribed_text = result['text'].strip()
         print(f"-> STT 결과: {transcribed_text}")
         
-        # '버섯' 같은 타겟 단어가 포함되어 있는지 검증
         match = target_word in transcribed_text
         return match, transcribed_text
-    finally:
-        if os.path.exists(audio_tmp):
-            try:
-                os.remove(audio_tmp)
-            except:
-                pass
+    except Exception as e:
+        print(f"[!] Whisper 분석 중 오류 발생: {e}")
+        return False, ""
 
 
 def check_video_for_text(video_path, reader):
@@ -157,80 +179,67 @@ def main():
         # 다운로드 버튼 검사용 셀렉터
         download_btn_selector = "button:has(svg[class*='download' i]), button:has(svg[class*='Download' i]), button[aria-label*='ownload' i], button[aria-label*='다운로드']"
 
+        current_url = None
         for idx, prompt_text in enumerate(prompts):
-            # 하나의 프롬프트(단어)마다 랜덤하게 하나의 URL을 선택합니다.
-            import random
-            target_url = random.choice(urls)
-            
             match = re.search(r"'([^']+)'", prompt_text)
             target_word = match.group(1) if match else "버섯"
-            
-            print("\n" + "="*50)
-            print(f"[{idx+1}/{len(prompts)}] 타겟 단어 : {target_word}")
-            print(f"사용 URL  : {target_url}")
-            print(f"사용 프롬프트: {prompt_text}")
-            print("="*50)
             
             target_folder = os.path.join(FINAL_SAVE_DIR, target_word)
             successful_count = 0
             if os.path.exists(target_folder):
                 existing_files = [f for f in os.listdir(target_folder) if f.endswith('.mp4')]
                 successful_count = len(existing_files)
-                if successful_count > 0:
-                    print(f"[!] 이미 기존에 만들어진 영상이 {successful_count}개 존재합니다.")
-                    for f in existing_files:
-                        print(f"    - {f}")
             
             if successful_count >= 5:
-                print(f"⏭️ [{target_word}] 이미 5개의 영상이 모두 확보되어 있어 생성을 건너뜁니다.")
+                print(f"⏭️ [{target_word}] 이미 확보됨 ({successful_count}/5)")
                 continue
             
             while successful_count < 5:
-                print(f"\n▶ [{target_word}] {successful_count+1}번째 영상 생성을 시도합니다...")
+                # 1. 페이지 세션 유지 전략: 만약 로딩된 페이지가 없다면 새로 엽니다.
+                if current_url is None:
+                    current_url = random.choice(urls)
+                    print(f"\n[Playwright] 새 세션을 시작합니다: {current_url}")
+                    try:
+                        page.goto(current_url, timeout=60000)
+                        page.wait_for_selector("div.tiptap", timeout=30000)
+                        time.sleep(3)
+                    except Exception as e:
+                        print(f"[!] 페이지 접속 오류: {e}")
+                        current_url = None # 재시도 시 새로고침 유도
+                        continue
+
+                print("\n" + "-"*50)
+                print(f"[{idx+1}/{len(prompts)}] 단어: {target_word} ({successful_count}/5)")
                 
-                print(f"[Playwright] Grok 접속 중... ({target_url})")
-                try:
-                    page.goto(target_url, timeout=60000)
-                except Exception as e:
-                    print("[경고] 페이지가 완벽히 로딩되지 않았을 수도 있습니다:", e)
+                # 2. 이번 생성에 사용할 이미지 랜덤 선택
+                if REFERENCE_IMAGES:
+                    ref_img = random.choice(REFERENCE_IMAGES)
+                    print(f"\n[선택됨] 랜덤 이미지: {os.path.basename(ref_img)}") # 사용자 확인용 로그 추가
+                    upload_image(page, ref_img)
+                    time.sleep(1.5) # 업로드 된 이미지가 UI에 반영될 시간을 조금 더 확보
 
-                try:
-                    page.wait_for_selector("div.tiptap", timeout=30000)
-                    
-                    # Grok이 이전 세션의 프롬프트 기록(히스토리)을 자동으로 불러오는 시간이 필요합니다.
-                    # 불러오기 전에 우리가 먼저 입력해버리면, 이후에 Grok이 예전 프롬프트로 덮어씌워 버립니다.
-                    print("[Playwright] Grok이 이전 기록을 불러올 때까지 대기합니다...")
-                    time.sleep(3.0) 
-                except Exception as e:
-                    print("[에러] 입력창을 찾을 수 없습니다. (재시도)")
-                    continue
-
-                initial_download_btns = page.locator(download_btn_selector).count()
-                initial_videos = page.locator("video").count()
-
+                # 프롬프트 가공 (일관성 강화)
                 clean_prompt = "".join(prompt_text.splitlines()).strip()
-                
-                print("[Playwright] 기존 텍스트 완벽 지우기 시도 중...")
-                editor = page.locator("div.tiptap")
-                editor.click()
-                time.sleep(0.5)
-                
-                # 히스토리가 다 불러와졌을테니 이제 다 지웁니다.
-                page.keyboard.press("Control+A")
-                time.sleep(0.3)
-                page.keyboard.press("Backspace")
-                time.sleep(0.5)
-                
-                try:
-                    editor.clear(timeout=1000)
-                except Exception:
-                    pass
-                time.sleep(0.5)
+                if "아이가" in clean_prompt:
+                    clean_prompt = clean_prompt.replace("아이가", "사진 속의 아이가", 1)
 
-                print("[Playwright] 새 프롬프트 입력...")
-                pyperclip.copy(clean_prompt)
-                editor.focus()
-                page.keyboard.press("Control+V")
+                # 3. 입력창 비우기 및 프롬프트 입력
+                try:
+                    editor = page.locator("div.tiptap")
+                    editor.click()
+                    time.sleep(0.3)
+                    page.keyboard.press("Control+A")
+                    page.keyboard.press("Backspace")
+                    
+                    print(f"[전송] {clean_prompt}")
+                    pyperclip.copy(clean_prompt)
+                    page.keyboard.press("Control+V")
+                    time.sleep(0.5)
+                    page.keyboard.press("Enter")
+                except Exception as e:
+                    print(f"[!] 입력 실패: {e}. 새 페이지로 전환합니다.")
+                    current_url = None
+                    continue
                 time.sleep(1.0) # 다 들어가고 나서 충분히 여유를 줌
 
                 print("[Playwright] 프롬프트 제출(생성 시작)...")
