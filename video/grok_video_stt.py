@@ -190,11 +190,11 @@ def main():
                 existing_files = [f for f in os.listdir(target_folder) if f.endswith('.mp4')]
                 successful_count = len(existing_files)
             
-            if successful_count >= 5:
-                print(f"⏭️ [{target_word}] 이미 확보됨 ({successful_count}/5)")
+            if successful_count >= 3:
+                print(f"⏭️ [{target_word}] 이미 확보됨 ({successful_count}/3)")
                 continue
             
-            while successful_count < 5:
+            while successful_count < 3:
                 # 1. 페이지 세션 유지 전략: 만약 로딩된 페이지가 없다면 새로 엽니다.
                 if current_url is None:
                     current_url = random.choice(urls)
@@ -209,7 +209,7 @@ def main():
                         continue
 
                 print("\n" + "-"*50)
-                print(f"[{idx+1}/{len(prompts)}] 단어: {target_word} ({successful_count}/5)")
+                print(f"[{idx+1}/{len(prompts)}] 단어: {target_word} ({successful_count}/3)")
                 
                 # 2. 이번 생성에 사용할 이미지 랜덤 선택
                 if REFERENCE_IMAGES:
@@ -335,7 +335,7 @@ def main():
                             
                             shutil.move(download_path, final_filepath)
                             successful_count += 1
-                            print(f"✅ [최종 성공] '{target_word}' (보유 영상 수: {successful_count}/5)")
+                            print(f"✅ [최종 성공] '{target_word}' (보유 영상 수: {successful_count}/3)")
                         else:
                             os.remove(download_path)
                             print(f"❌ [최종 실패] STT는 일치했으나 영상 내 자막(텍스트)이 발견됨. 삭제 후 재시도.")
@@ -345,7 +345,7 @@ def main():
                 else:
                     print("❌ [최종 실패] 분석할 동영상 파일을 확보하지 못했습니다. 재시도합니다.")
             
-            print(f"🎉 [{target_word}] 5개의 조건을 만족하는 영상을 모두 확보했습니다.")
+            print(f"🎉 [{target_word}] 3개의 조건을 만족하는 영상을 모두 확보했습니다.")
 
         browser.close()
 
