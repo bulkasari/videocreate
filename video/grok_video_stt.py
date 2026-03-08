@@ -194,29 +194,52 @@ def main():
                 print(f"⏭️ [{target_word}] 이미 확보됨 ({successful_count}/3)")
                 continue
             
+            # 단어별로 사용할 모델 URL과 참조 이미지를 하나씩만 고정 선택
+            word_model_url = random.choice(urls)
+            word_ref_image = random.choice(REFERENCE_IMAGES) if REFERENCE_IMAGES else None
+            
+            # 페이지가 해당 단어의 모델 URL에 있지 않다면 접속 (세션 갱신/유지)
+            if current_url != word_model_url:
+                current_url = word_model_url
+                print(f"\n" + "="*60)
+                print(f"🚀 [새 단어 시작] '{target_word}' -> 모델: {current_url}")
+                print("="*60)
+                try:
+                    page.goto(current_url, timeout=60000)
+                    page.wait_for_selector("div.tiptap", timeout=30000)
+                    time.sleep(3)
+                except Exception as e:
+                    print(f"[!] 페이지 접속 오류: {e}")
+                    current_url = None # 재시도 시 새로고침 유도
+                    continue
+            else:
+                print(f"\n" + "="*60)
+                print(f"🚀 [새 단어 시작] '{target_word}' (이전과 동일한 모델 유지)")
+                print("="*60)
+            
             while successful_count < 3:
-                # 1. 페이지 세션 유지 전략: 만약 로딩된 페이지가 없다면 새로 엽니다.
+                # 1. 예기치 못하게 페이지가 끊기거나 current_url이 None이 된 경우 복구
                 if current_url is None:
-                    current_url = random.choice(urls)
-                    print(f"\n[Playwright] 새 세션을 시작합니다: {current_url}")
+                    current_url = word_model_url
+                    print(f"\n[Playwright] 세션을 복구합니다: {current_url}")
                     try:
                         page.goto(current_url, timeout=60000)
                         page.wait_for_selector("div.tiptap", timeout=30000)
                         time.sleep(3)
                     except Exception as e:
                         print(f"[!] 페이지 접속 오류: {e}")
-                        current_url = None # 재시도 시 새로고침 유도
+                        current_url = None
+                        time.sleep(3)
                         continue
 
                 print("\n" + "-"*50)
                 print(f"[{idx+1}/{len(prompts)}] 단어: {target_word} ({successful_count}/3)")
                 
-                # 2. 이번 생성에 사용할 이미지 랜덤 선택
-                if REFERENCE_IMAGES:
-                    ref_img = random.choice(REFERENCE_IMAGES)
-                    print(f"\n[선택됨] 랜덤 이미지: {os.path.basename(ref_img)}") # 사용자 확인용 로그 추가
-                    upload_image(page, ref_img)
-                    time.sleep(1.5) # 업로드 된 이미지가 UI에 반영될 시간을 조금 더 확보
+                # 2. 이 단어에 고정으로 할당된 이미지를 업로드
+                if word_ref_image:
+                    print(f"\n[선택됨] 단어 전용 이미지: {os.path.basename(word_ref_image)}")
+                    upload_image(page, word_ref_image)
+                    time.sleep(1.5)
 
                 # 프롬프트 가공 (일관성 강화)
                 clean_prompt = "".join(prompt_text.splitlines()).strip()
