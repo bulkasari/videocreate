@@ -241,7 +241,7 @@ def main():
 
                 # 프롬프트 가공 (일관성 강화)
                 clean_prompt = "".join(prompt_text.splitlines()).strip()
-                if "아이가" in clean_prompt:
+                if "아이가" in clean_prompt and "사진 속의 아이가" not in clean_prompt:
                     clean_prompt = clean_prompt.replace("아이가", "사진 속의 아이가", 1)
 
                 # 2. 입력창 비우기 및 프롬프트 입력
