@@ -19,8 +19,8 @@ if ffmpeg_dir not in os.environ["PATH"]:
     os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ["PATH"]
 
 # 파일 및 폴더 경로
-BASE_DIR = r"c:\Users\Harry\videomake\videocreate\ko"
-WORK_DIR = r"c:\Users\Harry\videomake\videocreate\video"
+WORK_DIR = Path(__file__).parent
+BASE_DIR = WORK_DIR.parent / "ko"
 MODEL_FILE = os.path.join(BASE_DIR, "model")
 PROMPT_FILE = os.path.join(BASE_DIR, "prompt")
 
