@@ -255,8 +255,7 @@ def main():
                     print(f"[전송] {clean_prompt}")
                     pyperclip.copy(clean_prompt)
                     page.keyboard.press("Control+V")
-                    time.sleep(0.5)
-                    page.keyboard.press("Enter")
+                    time.sleep(1.0) # 붙여넣기 완료 대기
                 except Exception as e:
                     print(f"[!] 입력 실패: {e}. 새 페이지로 전환합니다.")
                     current_url = None
@@ -264,27 +263,41 @@ def main():
                 time.sleep(1.0) # 다 들어가고 나서 충분히 여유를 줌
 
                 print("[Playwright] 프롬프트 제출(생성 시작)...")
-                # 제출 버튼: 보통 에디터 근처의 svg를 포함한 버튼임
+                # 제출 버튼 클릭 시도
+                submitted = False
+                submit_selectors = [
+                    "button[aria-label='Send message']",
+                    "button[aria-label='Generate']",
+                    "button:has(svg.lucide-arrow-up)",
+                    "button:has(svg.lucide-rocket)",
+                    "button:has(svg.lucide-send)",
+                    "div.tiptap ~ div button",
+                    "div.tiptap + div button",
+                    "button:has-text('Generate')",
+                    "button:has-text('전송')",
+                    "button:has-text('Send')"
+                ]
                 try:
-                    # Enter 키로 제출 시도
-                    page.keyboard.press("Enter")
-                    time.sleep(0.5)
-                    # 별도의 전송 버튼 클릭 시도 (다양한 셀렉터)
-                    submit_selectors = [
-                        "button[aria-label='Send message']",
-                        "button:has(svg.lucide-arrow-up)",
-                        "button:has(svg.lucide-rocket)",
-                        "div.tiptap + div button", # 에디터 바로 뒤의 버튼
-                        "button:has-text('Generate')",
-                        "button:has-text('전송')"
-                    ]
                     for selector in submit_selectors:
                         btn = page.locator(selector).last
-                        if btn.is_visible(timeout=500):
-                            btn.click()
+                        if btn.is_visible(timeout=1500):
+                            btn.click(force=True)
+                            print(f"[Playwright] 버튼 클릭 성공: {selector}")
+                            submitted = True
+                            time.sleep(0.5)
                             break
                 except Exception:
                     pass
+
+                if not submitted:
+                    print("[Playwright] 버튼을 못 찾아 Enter 키로 제출 시도...")
+                    try:
+                        editor = page.locator("div.tiptap")
+                        editor.click()
+                        time.sleep(0.3)
+                        page.keyboard.press("Enter")
+                    except Exception:
+                        pass
                 
                 print("영상 생성을 감시합니다. (최대 2분 대기)")
                 download_path = None
