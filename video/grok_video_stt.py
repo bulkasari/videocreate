@@ -36,6 +36,7 @@ if not REFERENCE_IMAGES:
 
 DOWNLOAD_TMP_DIR = os.path.join(WORK_DIR, "download_tmp")
 FINAL_SAVE_DIR = os.path.join(WORK_DIR, "download")
+IMAGINE_URL = "https://grok.com/imagine/"
 
 os.makedirs(DOWNLOAD_TMP_DIR, exist_ok=True)
 os.makedirs(FINAL_SAVE_DIR, exist_ok=True)
@@ -194,38 +195,41 @@ def main():
                 print(f"⏭️ [{target_word}] 이미 확보됨 ({successful_count}/3)")
                 continue
             
-            # 단어별로 사용할 모델 URL과 참조 이미지를 하나씩만 고정 선택
-            word_model_url = random.choice(urls)
+            # 단어별로 사용할 참조 이미지를 하나씩만 고정 선택
             word_ref_image = random.choice(REFERENCE_IMAGES) if REFERENCE_IMAGES else None
-            
-            # 페이지가 해당 단어의 모델 URL에 있지 않다면 접속 (세션 갱신/유지)
-            if current_url != word_model_url:
-                current_url = word_model_url
-                print(f"\n" + "="*60)
-                print(f"🚀 [새 단어 시작] '{target_word}' -> 모델: {current_url}")
-                print("="*60)
-                try:
-                    page.goto(current_url, timeout=60000)
-                    page.wait_for_selector("div.tiptap", timeout=30000)
-                    time.sleep(3)
-                except Exception as e:
-                    print(f"[!] 페이지 접속 오류: {e}")
-                    current_url = None # 재시도 시 새로고침 유도
-                    continue
-            else:
-                print(f"\n" + "="*60)
-                print(f"🚀 [새 단어 시작] '{target_word}' (이전과 동일한 모델 유지)")
-                print("="*60)
-            
+
+            print(f"\n" + "="*60)
+            print(f"🚀 [새 단어 시작] '{target_word}' -> {IMAGINE_URL}")
+            print("="*60)
+            try:
+                page.goto(IMAGINE_URL, timeout=60000)
+                page.wait_for_selector("div.tiptap", timeout=30000)
+                time.sleep(3)
+                current_url = IMAGINE_URL
+            except Exception as e:
+                print(f"[!] 페이지 접속 오류: {e}")
+                current_url = None
+                continue
+
+            # 새 단어 시작 시 참조 이미지를 한 번만 업로드
+            if word_ref_image:
+                print(f"\n[선택됨] 단어 전용 이미지: {os.path.basename(word_ref_image)}")
+                upload_image(page, word_ref_image)
+                time.sleep(1.5)
+
             while successful_count < 3:
                 # 1. 예기치 못하게 페이지가 끊기거나 current_url이 None이 된 경우 복구
                 if current_url is None:
-                    current_url = word_model_url
-                    print(f"\n[Playwright] 세션을 복구합니다: {current_url}")
+                    print(f"\n[Playwright] 세션을 복구합니다: {IMAGINE_URL}")
                     try:
-                        page.goto(current_url, timeout=60000)
+                        page.goto(IMAGINE_URL, timeout=60000)
                         page.wait_for_selector("div.tiptap", timeout=30000)
                         time.sleep(3)
+                        current_url = IMAGINE_URL
+                        # 복구 후 이미지 재업로드
+                        if word_ref_image:
+                            upload_image(page, word_ref_image)
+                            time.sleep(1.5)
                     except Exception as e:
                         print(f"[!] 페이지 접속 오류: {e}")
                         current_url = None
@@ -234,19 +238,13 @@ def main():
 
                 print("\n" + "-"*50)
                 print(f"[{idx+1}/{len(prompts)}] 단어: {target_word} ({successful_count}/3)")
-                
-                # 2. 이 단어에 고정으로 할당된 이미지를 업로드
-                if word_ref_image:
-                    print(f"\n[선택됨] 단어 전용 이미지: {os.path.basename(word_ref_image)}")
-                    upload_image(page, word_ref_image)
-                    time.sleep(1.5)
 
                 # 프롬프트 가공 (일관성 강화)
                 clean_prompt = "".join(prompt_text.splitlines()).strip()
                 if "아이가" in clean_prompt:
                     clean_prompt = clean_prompt.replace("아이가", "사진 속의 아이가", 1)
 
-                # 3. 입력창 비우기 및 프롬프트 입력
+                # 2. 입력창 비우기 및 프롬프트 입력
                 try:
                     editor = page.locator("div.tiptap")
                     editor.click()
